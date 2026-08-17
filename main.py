@@ -1,15 +1,15 @@
 """
 Assentos UECE — cálculo dos quantitativos de assentos dos Conselhos de
 Centro/Faculdade/Instituto (Res. 1779/2022-CONSU, Art. 2º) e geração de PDF.
-Interface em Kivy puro (sem KivyMD) para máxima estabilidade no Android.
+Interface em Kivy puro e gerador de PDF em Python puro (sem dependências
+nativas), para máxima estabilidade no Android.
 
 Regras:
 - Membros natos = Direção (editável, padrão 2: Diretor + Vice) + coord. graduação
   + coord. pós stricto sensu + 1 rep. lato sensu (se houver).
 - Representantes docentes = 6 (fixo, Art. 2º, I).
 - Total de vagas do Conselho = (natos + 6) / 0,70  (natos + docentes = 70%).
-- STA = discentes = 15% do total, arredondado PARA CIMA (garante no mínimo 15%
-  em cada categoria; STA e discentes sempre iguais).
+- STA = discentes = 15% do total, arredondado PARA CIMA (>= 15% cada; iguais).
 """
 import os
 import math
@@ -34,8 +34,8 @@ def calcular(grad, stricto, lato, direcao=2):
     prop_exata = 0.15 * total_exato
     soma_exata = 0.30 * total_exato
 
-    sta = int(math.ceil(prop_exata))   # arredonda para cima -> >= 15% por categoria
-    dis = sta                          # STA e discentes sempre iguais
+    sta = int(math.ceil(prop_exata))
+    dis = sta
     m = sta + dis
     total = natos + docentes + m
 
@@ -55,7 +55,7 @@ def fmt(n):
     return s.replace(".", ",")
 
 
-# ---------------------------------------------------------------- geração PDF
+# ------------------------------- gerador de PDF (Python puro, sem libs nativas)
 
 AZUL = (11, 61, 107)
 AZUL2 = (18, 83, 154)
@@ -63,51 +63,122 @@ VERDE = (30, 122, 61)
 AMARELO = (242, 194, 0)
 CINZA = (90, 100, 115)
 
+_HELV_W = {
+    ' ': 278, '!': 278, '"': 355, '#': 556, '$': 556, '%': 889, '&': 667, "'": 191,
+    '(': 333, ')': 333, '*': 389, '+': 584, ',': 278, '-': 333, '.': 278, '/': 278,
+    '0': 556, '1': 556, '2': 556, '3': 556, '4': 556, '5': 556, '6': 556, '7': 556,
+    '8': 556, '9': 556, ':': 278, ';': 278, '<': 584, '=': 584, '>': 584, '?': 556,
+    '@': 1015, 'A': 667, 'B': 667, 'C': 722, 'D': 722, 'E': 667, 'F': 611, 'G': 778,
+    'H': 722, 'I': 278, 'J': 500, 'K': 667, 'L': 556, 'M': 833, 'N': 722, 'O': 778,
+    'P': 667, 'Q': 778, 'R': 722, 'S': 667, 'T': 611, 'U': 722, 'V': 667, 'W': 944,
+    'X': 667, 'Y': 667, 'Z': 611, '[': 278, '\\': 278, ']': 278, '^': 469, '_': 556,
+    '`': 333, 'a': 556, 'b': 556, 'c': 500, 'd': 556, 'e': 556, 'f': 278, 'g': 556,
+    'h': 556, 'i': 222, 'j': 222, 'k': 500, 'l': 222, 'm': 833, 'n': 556, 'o': 556,
+    'p': 556, 'q': 556, 'r': 333, 's': 500, 't': 278, 'u': 556, 'v': 500, 'w': 722,
+    'x': 500, 'y': 500, 'z': 500, '{': 334, '|': 260, '}': 334, '~': 584,
+}
 
-def _latin(s):
-    repl = {"–": "-", "—": "-", "•": "-", "“": '"', "”": '"', "’": "'",
-            "→": "->", "º": "o", "ª": "a", "§": "S"}
-    for a, b in repl.items():
-        s = s.replace(a, b)
-    try:
-        s.encode("latin-1"); return s
-    except UnicodeEncodeError:
-        return s.encode("latin-1", "replace").decode("latin-1")
+_ACENTOS = {
+    'á': 'a', 'à': 'a', 'ã': 'a', 'â': 'a', 'ä': 'a', 'é': 'e', 'ê': 'e', 'è': 'e',
+    'ë': 'e', 'í': 'i', 'î': 'i', 'ì': 'i', 'ï': 'i', 'ó': 'o', 'õ': 'o', 'ô': 'o',
+    'ò': 'o', 'ö': 'o', 'ú': 'u', 'û': 'u', 'ù': 'u', 'ü': 'u', 'ç': 'c', 'ñ': 'n',
+    'Á': 'A', 'Ã': 'A', 'Â': 'A', 'À': 'A', 'É': 'E', 'Ê': 'E', 'Í': 'I', 'Ó': 'O',
+    'Õ': 'O', 'Ô': 'O', 'Ú': 'U', 'Ç': 'C', 'º': 'o', 'ª': 'a', '§': 'S', '–': '-',
+    '—': '-', '•': '-', '“': '"', '”': '"', '’': "'", '→': '->',
+}
+
+
+def _ascii(s):
+    s = "".join(_ACENTOS.get(c, c) for c in str(s))
+    return s.encode("ascii", "replace").decode("ascii")
+
+
+class PDFDoc:
+    """Escreve um PDF simples (A4) com retângulos, linhas e texto Helvetica."""
+
+    def __init__(self, w=595.0, h=842.0):
+        self.W = w
+        self.H = h
+        self.ops = []
+
+    def _col(self, c):
+        return "%.3f %.3f %.3f" % (c[0] / 255.0, c[1] / 255.0, c[2] / 255.0)
+
+    def fill_rect(self, x, y, w, h, color):
+        self.ops.append("%s rg %.2f %.2f %.2f %.2f re f"
+                        % (self._col(color), x, self.H - y - h, w, h))
+
+    def hline(self, x1, x2, y, color, width=0.5):
+        self.ops.append("%s RG %.2f w %.2f %.2f m %.2f %.2f l S"
+                        % (self._col(color), width, x1, self.H - y, x2, self.H - y))
+
+    def text_width(self, s, size):
+        return sum(_HELV_W.get(c, 556) for c in s) / 1000.0 * size
+
+    def text(self, x, y, s, size, color, bold=False, align="L"):
+        s = _ascii(s).replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        w = self.text_width(s, size)
+        if align == "R":
+            x -= w
+        elif align == "C":
+            x -= w / 2.0
+        font = "F2" if bold else "F1"
+        base = self.H - y - size
+        self.ops.append("BT /%s %.2f Tf %s rg %.2f %.2f Td (%s) Tj ET"
+                        % (font, size, self._col(color), x, base, s))
+
+    def save(self, path):
+        content = "\n".join(self.ops).encode("latin-1", "replace")
+        objs = [
+            b"<< /Type /Catalog /Pages 2 0 R >>",
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            ("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 %.0f %.0f] "
+             "/Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Contents 4 0 R >>"
+             % (self.W, self.H)).encode("latin-1"),
+            b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>",
+        ]
+        out = b"%PDF-1.4\n"
+        offsets = []
+        for i, o in enumerate(objs, start=1):
+            offsets.append(len(out))
+            out += ("%d 0 obj\n" % i).encode() + o + b"\nendobj\n"
+        xref_pos = len(out)
+        out += ("xref\n0 %d\n" % (len(objs) + 1)).encode()
+        out += b"0000000000 65535 f \n"
+        for off in offsets:
+            out += ("%010d 00000 n \n" % off).encode()
+        out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF"
+                % (len(objs) + 1, xref_pos)).encode()
+        with open(path, "wb") as f:
+            f.write(out)
+        return path
 
 
 def gerar_pdf(unidade, r, destino):
-    from fpdf import FPDF
-
     unidade = (unidade or "").strip() or "(unidade nao informada)"
-    pdf = FPDF(orientation="P", unit="pt", format="A4")
-    pdf.set_auto_page_break(auto=False)
-    pdf.add_page()
-    W = pdf.w
-    M = 48
+    d = PDFDoc()
+    W, H, M = d.W, d.H, 48.0
 
-    pdf.set_fill_color(*AZUL); pdf.rect(0, 0, W, 96, "F")
-    pdf.set_fill_color(*VERDE); pdf.rect(W - 150, 0, 150, 96, "F")
-    pdf.set_fill_color(*AMARELO); pdf.rect(0, 96, W, 4, "F")
+    # faixa superior
+    d.fill_rect(0, 0, W, 96, AZUL)
+    d.fill_rect(W - 150, 0, 150, 96, VERDE)
+    d.fill_rect(0, 96, W, 4, AMARELO)
+    d.text(M, 24, "UNIVERSIDADE ESTADUAL DO CEARA - UECE", 9, (255, 255, 255))
+    d.text(M, 40, "Quantitativo de Assentos do Conselho", 15, (255, 255, 255), bold=True)
+    d.text(M, 66, "Res. no 1779/2022-CONSU, Art. 2o - Representacao de STA e Discentes",
+           9.5, (255, 255, 255))
 
-    pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_xy(M, 22); pdf.cell(0, 12, "UNIVERSIDADE ESTADUAL DO CEARA - UECE")
-    pdf.set_font("Helvetica", "B", 15)
-    pdf.set_xy(M, 40); pdf.cell(0, 18, "Quantitativo de Assentos do Conselho")
-    pdf.set_font("Helvetica", "", 9.5)
-    pdf.set_xy(M, 64)
-    pdf.cell(0, 14, "Res. no 1779/2022-CONSU, Art. 2o - Representacao de STA e Discentes")
+    # unidade
+    y = 126
+    d.text(M, y, unidade, 12, AZUL, bold=True)
+    d.hline(M, W - M, y + 20, (225, 232, 240), 0.6)
+    y += 38
 
-    y = 128
-    pdf.set_text_color(*AZUL)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.set_xy(M, y); pdf.cell(0, 16, _latin(unidade))
-    pdf.set_draw_color(225, 232, 240)
-    pdf.line(M, y + 22, W - M, y + 22)
-    y += 40
-
-    gap = 12
-    cw = (W - 2 * M - 3 * gap) / 4
+    # cartões numéricos
+    gap = 12.0
+    cw = (W - 2 * M - 3 * gap) / 4.0
     cards = [
         (r["natos"], "Membros natos", AZUL2),
         (r["docentes"], "Rep. docentes", AZUL2),
@@ -116,26 +187,21 @@ def gerar_pdf(unidade, r, destino):
     ]
     for i, (val, lab, cor) in enumerate(cards):
         x = M + i * (cw + gap)
-        pdf.set_fill_color(245, 248, 250)
-        pdf.rect(x, y, cw, 54, "F")
-        pdf.set_text_color(*cor); pdf.set_font("Helvetica", "B", 22)
-        pdf.set_xy(x, y + 8); pdf.cell(cw, 24, str(val), align="C")
-        pdf.set_text_color(*CINZA); pdf.set_font("Helvetica", "", 7.6)
-        pdf.set_xy(x, y + 36); pdf.cell(cw, 12, _latin(lab), align="C")
-    y += 54 + 26
+        d.fill_rect(x, y, cw, 54, (245, 248, 250))
+        d.text(x + cw / 2, y + 12, str(val), 22, cor, bold=True, align="C")
+        d.text(x + cw / 2, y + 40, lab, 7.6, CINZA, align="C")
+    y += 54 + 24
 
-    pdf.set_text_color(*AZUL); pdf.set_font("Helvetica", "B", 11)
-    pdf.set_xy(M, y); pdf.cell(0, 14, "Composicao do Conselho")
+    # tabela
+    d.text(M, y, "Composicao do Conselho", 11, AZUL, bold=True)
     y += 18
-
     col_cat = M + 8
     col_n = W - M - 130
     col_pct = W - M - 8
-    pdf.set_fill_color(241, 245, 249); pdf.rect(M, y, W - 2 * M, 20, "F")
-    pdf.set_text_color(51, 65, 85); pdf.set_font("Helvetica", "B", 8.5)
-    pdf.set_xy(col_cat, y + 6); pdf.cell(0, 10, "CATEGORIA")
-    pdf.set_xy(col_n - 60, y + 6); pdf.cell(60, 10, "ASSENTOS", align="R")
-    pdf.set_xy(col_pct - 70, y + 6); pdf.cell(70, 10, "% DO TOTAL", align="R")
+    d.fill_rect(M, y, W - 2 * M, 20, (241, 245, 249))
+    d.text(col_cat, y + 6, "CATEGORIA", 8.5, (51, 65, 85), bold=True)
+    d.text(col_n, y + 6, "ASSENTOS", 8.5, (51, 65, 85), bold=True, align="R")
+    d.text(col_pct, y + 6, "% DO TOTAL", 8.5, (51, 65, 85), bold=True, align="R")
     y += 20
 
     linhas = [
@@ -144,59 +210,55 @@ def gerar_pdf(unidade, r, destino):
         ("Representantes tecnico-administrativos (STA)", r["sta"], r["pct_sta"]),
         ("Representantes discentes", r["dis"], r["pct_dis"]),
     ]
-    pdf.set_text_color(31, 41, 55); pdf.set_font("Helvetica", "", 9.5)
     for nome, n, pct in linhas:
-        pdf.set_xy(col_cat, y + 5); pdf.cell(0, 12, _latin(nome))
-        pdf.set_xy(col_n - 60, y + 5); pdf.cell(60, 12, str(n), align="R")
-        pdf.set_xy(col_pct - 70, y + 5); pdf.cell(70, 12, fmt(pct) + "%", align="R")
-        pdf.set_draw_color(230, 235, 242); pdf.line(M, y + 20, W - M, y + 20)
+        d.text(col_cat, y + 5, nome, 9.5, (31, 41, 55))
+        d.text(col_n, y + 5, str(n), 9.5, (31, 41, 55), align="R")
+        d.text(col_pct, y + 5, fmt(pct) + "%", 9.5, (31, 41, 55), align="R")
+        d.hline(M, W - M, y + 20, (230, 235, 242), 0.5)
         y += 20
 
-    pdf.set_fill_color(247, 250, 248); pdf.rect(M, y, W - 2 * M, 22, "F")
-    pdf.set_draw_color(*VERDE); pdf.set_line_width(1.4)
-    pdf.line(M, y, W - M, y); pdf.set_line_width(0.2)
-    pdf.set_text_color(*AZUL); pdf.set_font("Helvetica", "B", 9.5)
-    pdf.set_xy(col_cat, y + 5); pdf.cell(0, 12, "Total de vagas do Conselho")
-    pdf.set_xy(col_n - 60, y + 5); pdf.cell(60, 12, str(r["total"]), align="R")
-    pdf.set_xy(col_pct - 70, y + 5); pdf.cell(70, 12, "100%", align="R")
-    y += 40
+    # total
+    d.fill_rect(M, y, W - 2 * M, 22, (247, 250, 248))
+    d.hline(M, W - M, y, VERDE, 1.4)
+    d.text(col_cat, y + 6, "Total de vagas do Conselho", 9.5, AZUL, bold=True)
+    d.text(col_n, y + 6, str(r["total"]), 9.5, AZUL, bold=True, align="R")
+    d.text(col_pct, y + 6, "100%", 9.5, AZUL, bold=True, align="R")
+    y += 42
 
-    pdf.set_fill_color(251, 252, 254); pdf.rect(M, y, W - 2 * M, 104, "F")
-    pdf.set_fill_color(*AMARELO); pdf.rect(M, y, 4, 104, "F")
-    pdf.set_text_color(*CINZA); pdf.set_font("Helvetica", "B", 9)
-    pdf.set_xy(M + 14, y + 8); pdf.cell(0, 12, "Memoria de calculo")
-    pdf.set_font("Helvetica", "", 8.6)
+    # memória de cálculo
+    d.fill_rect(M, y, W - 2 * M, 104, (251, 252, 254))
+    d.fill_rect(M, y, 4, 104, AMARELO)
+    d.text(M + 14, y + 10, "Memoria de calculo", 9, CINZA, bold=True)
     mem = [
         "Membros natos = Direcao (%d) + Graduacao (%d) + Stricto sensu (%d) + Lato sensu (%d) = %d."
         % (r["direcao"], r["grad"], r["stricto"], r["lato"], r["natos"]),
-        "Total de vagas do Conselho = (natos %d + 6 docentes) / 0,70 = %s  (natos + docentes = 70%%)."
+        "Total de vagas = (natos %d + 6 docentes) / 0,70 = %s   (natos + docentes = 70%%)."
         % (r["natos"], fmt(r["total_exato"])),
-        "15%% incidente sobre o total (Art. 2o, II e III) = %s -> arredondado para cima (min. 15%%) = %d por categoria."
+        "15%% sobre o total (Art. 2o, II e III) = %s -> arredondado p/ cima = %d por categoria."
         % (fmt(r["prop_exata"]), r["sta"]),
         "STA + discentes = %d assentos = %s%% do Conselho. Cada categoria = %s%% (>= 15%%)."
         % (r["m"], fmt(r["pct_conjunto"]), fmt(r["pct_sta"])),
     ]
-    yy = y + 26
+    yy = y + 30
     for t in mem:
-        pdf.set_xy(M + 14, yy)
-        pdf.multi_cell(W - 2 * M - 28, 12, _latin(t))
-        yy += 18
-    y += 104 + 18
+        d.text(M + 14, yy, t, 8.6, (70, 80, 95))
+        yy += 17
+    y += 104 + 20
 
-    pdf.set_text_color(*CINZA); pdf.set_font("Helvetica", "I", 8)
-    pdf.set_xy(M, y)
-    pdf.multi_cell(W - 2 * M, 11, _latin(
-        "Fundamentos: Art. 2o, II, III e SS 2o e 6o da Res. 1779/2022-CONSU; item VI do art. 47 do "
-        "Regimento Geral da UECE. Os quantitativos finais sao definidos pelo Conselho e apontados no edital."))
+    d.text(M, y, "Fundamentos: Art. 2o, II, III e paragrafos 2o e 6o da Res. 1779/2022-CONSU;",
+           8, CINZA)
+    d.text(M, y + 12, "item VI do art. 47 do Regimento Geral da UECE. Quantitativos definidos pelo Conselho.",
+           8, CINZA)
 
-    hy = pdf.h - 30
-    pdf.set_draw_color(225, 232, 240); pdf.line(M, hy - 8, W - M, hy - 8)
-    pdf.set_font("Helvetica", "", 7.5); pdf.set_text_color(*CINZA)
+    # rodapé
+    hy = H - 34
+    d.hline(M, W - M, hy, (225, 232, 240), 0.6)
     hoje = datetime.now().strftime("%d/%m/%Y")
-    pdf.set_xy(M, hy)
-    pdf.cell(0, 10, _latin("Gerado em %s - UECE - Av. Dr. Silas Munguba, 1700 - Campus do Itaperi - Fortaleza/CE" % hoje))
+    d.text(M, hy + 6,
+           "Gerado em %s - UECE - Av. Dr. Silas Munguba, 1700 - Campus do Itaperi - Fortaleza/CE" % hoje,
+           7.5, CINZA)
 
-    pdf.output(destino)
+    d.save(destino)
     return destino
 
 
@@ -227,9 +289,7 @@ def _shared_download_dir():
 
 
 def _campo(texto, valor="", numerico=False):
-    """Cria um bloco rótulo + TextInput e devolve (box, textinput)."""
-    box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(64),
-                    spacing=dp(2))
+    box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(64), spacing=dp(2))
     lbl = Label(text=texto, size_hint_y=None, height=dp(22), halign="left",
                 valign="middle", color=(0.2, 0.24, 0.29, 1), font_size=dp(13))
     lbl.bind(size=lambda i, s: setattr(i, "text_size", s))
@@ -247,7 +307,6 @@ class Raiz(BoxLayout):
         self.app = app
         self.resultado = None
 
-        # cabeçalho
         header = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(70),
                            padding=[dp(16), dp(10)])
         with header.canvas.before:
@@ -266,7 +325,6 @@ class Raiz(BoxLayout):
         header.add_widget(t2)
         self.add_widget(header)
 
-        # formulário rolável
         scroll = ScrollView()
         form = BoxLayout(orientation="vertical", size_hint_y=None,
                          padding=dp(16), spacing=dp(8))
@@ -279,7 +337,6 @@ class Raiz(BoxLayout):
         for b in (bu, bd, bg, bs):
             form.add_widget(b)
 
-        # lato sensu (botão alterna Sim/Nao)
         self.lato_on = False
         self.btn_lato = Button(text="Oferta Lato Sensu?  NAO", size_hint_y=None,
                                height=dp(44), background_color=(0.8, 0.83, 0.87, 1),
@@ -293,7 +350,6 @@ class Raiz(BoxLayout):
         info.bind(size=lambda i, s: setattr(i, "text_size", s))
         form.add_widget(info)
 
-        # botões
         linha = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
         b_calc = Button(text="Calcular", background_color=(0.07, 0.32, 0.6, 1),
                         color=(1, 1, 1, 1), bold=True)
@@ -305,7 +361,6 @@ class Raiz(BoxLayout):
         linha.add_widget(self.b_pdf)
         form.add_widget(linha)
 
-        # resultado
         self.res = Label(text="", size_hint_y=None, markup=True, font_size=dp(14),
                          color=(0.12, 0.15, 0.18, 1), halign="left", valign="top")
         self.res.bind(width=lambda i, w: setattr(i, "text_size", (w, None)),
@@ -371,7 +426,7 @@ class Raiz(BoxLayout):
             except Exception:
                 pass
 
-        self._popup("PDF gerado", "\n".join(paths))
+        self._popup("PDF gerado com sucesso", "Salvo em:\n" + "\n".join(paths))
 
     def _popup(self, titulo, texto):
         lbl = Label(text=texto, halign="left", valign="top")
