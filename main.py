@@ -300,7 +300,9 @@ def _exportar_e_abrir(priv_path, fname):
     onde = ""
     try:
         if VERSION.SDK_INT >= 29:
-            # armazenamento com escopo -> insere em Downloads via MediaStore
+            # armazenamento com escopo -> insere em Downloads via MediaStore.
+            # Os bytes sao escritos pelo descritor de arquivo (os.write), evitando
+            # a conversao bytes->byte[] da ponte Java (que pode corromper o arquivo).
             ContentValues = autoclass("android.content.ContentValues")
             Downloads = autoclass("android.provider.MediaStore$Downloads")
             resolver = context.getContentResolver()
@@ -309,10 +311,15 @@ def _exportar_e_abrir(priv_path, fname):
             values.put("mime_type", "application/pdf")
             values.put("relative_path", "Download")
             open_uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
-            out = resolver.openOutputStream(open_uri)
-            out.write(data)
-            out.flush()
-            out.close()
+            pfd = resolver.openFileDescriptor(open_uri, "w")
+            fd = pfd.detachFd()
+            try:
+                mv = memoryview(data)
+                while len(mv):
+                    n = os.write(fd, mv)
+                    mv = mv[n:]
+            finally:
+                os.close(fd)
             onde = "Download/" + fname
         else:
             Environment = autoclass("android.os.Environment")
