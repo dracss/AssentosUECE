@@ -288,6 +288,30 @@ def _shared_download_dir():
     return None
 
 
+def _abrir_pdf(path):
+    """Abre o PDF no aplicativo padrao do Android. Retorna True se conseguiu."""
+    try:
+        from jnius import autoclass  # type: ignore
+        Intent = autoclass("android.content.Intent")
+        Uri = autoclass("android.net.Uri")
+        File = autoclass("java.io.File")
+        PythonActivity = autoclass("org.kivy.android.PythonActivity")
+        activity = PythonActivity.mActivity
+        try:
+            StrictMode = autoclass("android.os.StrictMode")
+            StrictMode.disableDeathOnFileUriExposure()
+        except Exception:
+            pass
+        intent = Intent(Intent.ACTION_VIEW)
+        uri = Uri.fromFile(File(path))
+        intent.setDataAndType(uri, "application/pdf")
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        activity.startActivity(intent)
+        return True
+    except Exception:
+        return False
+
+
 def _campo(texto, valor="", numerico=False):
     box = BoxLayout(orientation="vertical", size_hint_y=None, height=dp(64), spacing=dp(2))
     lbl = Label(text=texto, size_hint_y=None, height=dp(22), halign="left",
@@ -426,7 +450,13 @@ class Raiz(BoxLayout):
             except Exception:
                 pass
 
-        self._popup("PDF gerado com sucesso", "Salvo em:\n" + "\n".join(paths))
+        # abre no leitor de PDF padrao (prefere a copia em Download, legivel por outros apps)
+        alvo = paths[-1]
+        aberto = _abrir_pdf(alvo)
+        msg = "Salvo em:\n" + "\n".join(paths)
+        if not aberto:
+            msg += "\n\n(Abra o arquivo pelo app Arquivos ou Downloads.)"
+        self._popup("PDF gerado com sucesso", msg)
 
     def _popup(self, titulo, texto):
         lbl = Label(text=texto, halign="left", valign="top")
