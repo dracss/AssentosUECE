@@ -277,39 +277,73 @@ from kivy.core.window import Window
 Window.clearcolor = (0.96, 0.97, 0.98, 1)
 
 
-def _shared_download_dir():
-    try:
-        from android.storage import primary_external_storage_path  # type: ignore
-        d = os.path.join(primary_external_storage_path(), "Download")
-        if os.path.isdir(d):
-            return d
-    except Exception:
-        pass
-    return None
-
-
-def _abrir_pdf(path):
-    """Abre o PDF no aplicativo padrao do Android. Retorna True se conseguiu."""
+def _exportar_e_abrir(priv_path, fname):
+    """Salva o PDF em local acessivel (Downloads, via MediaStore no Android 10+)
+    e abre no leitor padrao. Retorna (onde_str, aberto_bool)."""
     try:
         from jnius import autoclass  # type: ignore
-        Intent = autoclass("android.content.Intent")
-        Uri = autoclass("android.net.Uri")
-        File = autoclass("java.io.File")
-        PythonActivity = autoclass("org.kivy.android.PythonActivity")
-        activity = PythonActivity.mActivity
+    except Exception:
+        return ("", False)
+
+    Intent = autoclass("android.content.Intent")
+    Uri = autoclass("android.net.Uri")
+    File = autoclass("java.io.File")
+    PythonActivity = autoclass("org.kivy.android.PythonActivity")
+    VERSION = autoclass("android.os.Build$VERSION")
+    activity = PythonActivity.mActivity
+    context = activity.getApplicationContext()
+
+    with open(priv_path, "rb") as f:
+        data = f.read()
+
+    open_uri = None
+    onde = ""
+    try:
+        if VERSION.SDK_INT >= 29:
+            # armazenamento com escopo -> insere em Downloads via MediaStore
+            ContentValues = autoclass("android.content.ContentValues")
+            Downloads = autoclass("android.provider.MediaStore$Downloads")
+            resolver = context.getContentResolver()
+            values = ContentValues()
+            values.put("_display_name", fname)
+            values.put("mime_type", "application/pdf")
+            values.put("relative_path", "Download")
+            open_uri = resolver.insert(Downloads.EXTERNAL_CONTENT_URI, values)
+            out = resolver.openOutputStream(open_uri)
+            out.write(data)
+            out.flush()
+            out.close()
+            onde = "Download/" + fname
+        else:
+            Environment = autoclass("android.os.Environment")
+            dl = Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
+            dest = os.path.join(dl, fname)
+            with open(dest, "wb") as g:
+                g.write(data)
+            try:
+                autoclass("android.os.StrictMode").disableDeathOnFileUriExposure()
+            except Exception:
+                pass
+            open_uri = Uri.fromFile(File(dest))
+            onde = dest
+    except Exception:
+        # ultimo recurso: abre o arquivo privado por file:// (pode falhar em alguns leitores)
         try:
-            StrictMode = autoclass("android.os.StrictMode")
-            StrictMode.disableDeathOnFileUriExposure()
+            autoclass("android.os.StrictMode").disableDeathOnFileUriExposure()
         except Exception:
             pass
+        open_uri = Uri.fromFile(File(priv_path))
+        onde = priv_path
+
+    try:
         intent = Intent(Intent.ACTION_VIEW)
-        uri = Uri.fromFile(File(path))
-        intent.setDataAndType(uri, "application/pdf")
+        intent.setDataAndType(open_uri, "application/pdf")
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_GRANT_READ_URI_PERMISSION)
         activity.startActivity(intent)
-        return True
+        return (onde, True)
     except Exception:
-        return False
+        return (onde, False)
 
 
 def _campo(texto, valor="", numerico=False):
@@ -431,31 +465,18 @@ class Raiz(BoxLayout):
         safe = "".join(c if c.isalnum() else "_" for c in nome)[:40] or "unidade"
         fname = "assentos_%s.pdf" % safe
 
-        paths = []
         priv = os.path.join(self.app.user_data_dir, fname)
         try:
             gerar_pdf(self.unidade.text, self.resultado, priv)
-            paths.append(priv)
         except Exception as e:
             self._popup("Erro ao gerar PDF", str(e))
             return
 
-        shared = _shared_download_dir()
-        if shared:
-            try:
-                dest = os.path.join(shared, fname)
-                with open(priv, "rb") as a, open(dest, "wb") as b:
-                    b.write(a.read())
-                paths.append(dest)
-            except Exception:
-                pass
-
-        # abre no leitor de PDF padrao (prefere a copia em Download, legivel por outros apps)
-        alvo = paths[-1]
-        aberto = _abrir_pdf(alvo)
-        msg = "Salvo em:\n" + "\n".join(paths)
+        onde, aberto = _exportar_e_abrir(priv, fname)
+        destino = onde or priv
+        msg = "PDF salvo em:\n%s" % destino
         if not aberto:
-            msg += "\n\n(Abra o arquivo pelo app Arquivos ou Downloads.)"
+            msg += "\n\n(Abra pelo app Downloads / Arquivos.)"
         self._popup("PDF gerado com sucesso", msg)
 
     def _popup(self, titulo, texto):
