@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,json,ttf
 source.exclude_dirs = AssentosUECE, bin, tests, __pycache__
 version = 0.1
-requirements = python3,kivy==2.3.0,pillow,fpdf2,defusedxml,fonttools
+requirements = python3,kivy==2.3.0,pillow
 orientation = portrait
 fullscreen = 0
 
